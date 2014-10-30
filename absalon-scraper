@@ -1,0 +1,451 @@
+#!/usr/bin/env perl
+use 5.012;
+use warnings;
+use utf8::all;
+
+use DateTime;
+use WWW::Mechanize;
+use HTML::Query qw(Query);
+use Data::Dumper;
+use List::Util qw/min max/;
+use syntax qw/junction/;
+use IO::All -utf8;
+use FindBin qw/$Bin/;
+use File::Path qw(make_path);
+
+use constant SITE => 'https://absalon.itslearning.com/';
+
+# Introduction to Programming info
+use constant OUTPUTDIR => 'data-ip';
+use constant COURSEID => 56287;
+use constant GROUPRX => qr/Øvehold (\d+)/;
+
+# Discrete Math info
+# use constant OUTPUTDIR => 'data-dims';
+# use constant GROUPRX => qr/Øvelseshold (\d+)/;
+# use constant COURSEID => 56211;
+
+my ($USERNAME, $PASSWORD) = io("$Bin/.absalon_credentials")->slurp =~ /^([^:]+):(.*)$/;
+
+die(<<END) unless $USERNAME;
+Place a file named '.absalon_credentials' in the folder you run the program from.
+In it, put username:password for absalon.itslearning.com login.
+END
+
+chomp $USERNAME;
+chomp $PASSWORD;
+
+my $quiet = @ARGV >= 1 && $ARGV[0] eq '-quiet';
+
+my $mech = WWW::Mechanize->new();
+$mech->agent_alias('Windows Mozilla');
+
+local $| = 1;
+
+main($mech);
+
+sub getHTML {
+    my $mech = shift;
+    return $mech->response->decoded_content;
+}
+
+sub login {
+    my ($mech, $site) = @_;
+
+    $mech->get($site);
+    $mech->submit_form(
+        with_fields => {
+            '__EVENTTARGET' => 'ctl00$ContentPlaceHolder1$nativeLoginButton',
+            'ctl00$ContentPlaceHolder1$Username$input' => $USERNAME,
+            'ctl00$ContentPlaceHolder1$Password$input' => $PASSWORD,
+        },
+    );
+}
+
+sub gotoParticipants {
+    my ($mech) = @_;
+    $mech->get(SITE . "Course/Participants.aspx?CourseID=" . COURSEID);
+}
+
+sub gotoAssessmentReport {
+    my ($mech) = @_;
+    $mech->get(SITE . "AssessmentRecord/Assignments.aspx?CourseID=" . COURSEID);
+}
+
+sub trim {
+    my ($res) = shift =~ /^\s*(.*?)\s*$/;
+    return $res;
+}
+
+sub getEssayID {
+    my ($res) = shift =~ /.*\?EssayID=(\d+).*/;
+    return $res;
+}
+
+sub getAssignmentInfo {
+    my ($mech, $assignment) = @_;
+
+    $mech->get(SITE . "essay/read_essay.aspx?EssayID=" . $assignment->{essayID});
+
+    my @info_elements = Query( text => getHTML($mech), "ul.ccl-rwgm-row li.ccl-rwgm-column-1-3 ul li" );
+    for my $li (@info_elements) {
+        $_ = $li->as_trimmed_text();
+        if (m/Deadline: (\d+ \w+ \d+ \d+:\d+).*/) {
+            $assignment->{deadline} = $1;
+        }
+        elsif (m/Published: (\d+ \w+ \d+ \d+:\d+).*/) {
+            $assignment->{deadline} = $1;
+        }
+        elsif (m/Mandatory: (Yes|No).*/) {
+            $assignment->{mandatory} = $1;
+        }
+        elsif (m/Use groups: Learner-defined groups.*/) {
+            $assignment->{groups} = "Yes";
+        }
+        elsif (m/Use groups: Do not use groups.*/) {
+            $assignment->{groups} = "No";
+        }
+        elsif (m/Participants answered: (\d+).*/) {
+            $assignment->{answers} = $1;
+        }
+        elsif (m/Max. score: (\d+).*/) {
+            $assignment->{maxScore} = $1;
+        }
+    }
+
+    if(!$assignment->{maxScore}) {
+        $assignment->{maxScore} = "";
+    }
+
+    if(!$assignment->{deadline}) {
+        $assignment->{deadline} = "";
+    }
+
+    if(!$assignment->{mandatory}) {
+        $assignment->{mandatory} = "";
+    }
+
+    if(!$assignment->{groups}) {
+        $assignment->{groups} = "";
+    }
+
+    if(!$assignment->{answers}) {
+        $assignment->{answers} = "";
+    }
+}
+
+sub getAssignmentList {
+    my ($mech, $assignments) = @_;
+
+    gotoAssessmentReport($mech);
+
+    my $q = Query( text => getHTML($mech) );
+    my @header = ($q->query('tr th')->get_elements);
+
+    for my $head (@header) {
+        next unless (($head->attr('class') // '') eq 'grade-book-item-header');
+
+        my $assignment = {};
+
+        my $hd = Query($head);
+        my $link = $hd->query('a');
+        my $title = trim(($hd->query('a')->get_elements)[0]->as_text);
+
+        my $url = $link->attr('href');
+
+        $assignment->{title} = $title;
+        $assignment->{essayID} = getEssayID(@$url[0]);
+
+        getAssignmentInfo($mech,$assignment);
+
+        push(@$assignments, $assignment);
+    }
+}
+
+
+
+sub parsePersons {
+    my ($mech, $persons) = @_;
+
+    my $q = Query( text => getHTML($mech) );
+    my @header = map { $_->as_text } ($q->query('thead tr th')->get_elements);
+    my ($classIdx) = grep { $header[$_] =~ /Group/ } (0 .. $#header);
+    my ($nameIdx) = grep { $header[$_] =~ /Name/ } (0 .. $#header);
+    my ($roleIdx) = grep { $header[$_] =~ /Role/ } (0 .. $#header);
+    my ($lastVisitIdx) = grep { $header[$_] =~ /Last visit/ } (0 .. $#header);
+    my ($usernameIdx) = grep { $header[$_] =~ /Username/ } (0 .. $#header);
+
+    my @rows = ($q->query('tr')->get_elements);
+    for my $tr (@rows) {
+        my $sq = Query($tr);
+        my @row = map { $_->as_text } ($sq->query('td')->get_elements);
+
+        next unless $row[$usernameIdx];
+
+        my ($class) = ($row[$classIdx] // '') =~ GROUPRX;
+        
+        if (!$class) {
+            $class = "";
+        }
+
+
+        my $person = {class => $class,
+                      name  => $row[$nameIdx],
+                      username => $row[$usernameIdx],
+                      lastVisit => $row[$lastVisitIdx],
+                      role => $row[$roleIdx]
+                     };
+
+        push(@$persons, $person);
+    }
+}
+
+sub getNextPersonPage {
+    my $mech = shift;
+
+    return 0 unless my $link = $mech->find_link( text_regex => qr/»/ );
+    my ($page) = $link->attrs->{onclick} =~ /goToPage\((\d+)\)/;
+    $mech->form_id('aspnetForm');
+    $mech->set_fields('ctl00$ContentPlaceHolder$ParticipantsGrid$HPN' => $page);
+    $mech->submit_form();
+
+    return 1;
+}
+
+sub getParticipants {
+    my ($mech, $students) = @_;
+    gotoParticipants($mech);
+    do {
+        parsePersons($mech, $students);
+    } while (getNextPersonPage($mech));
+}
+
+sub isString {
+    my $TestData = $_[0];
+
+    return if scalar @_ ne 1;
+    return if ref $TestData;
+    return if !defined $TestData;
+
+    return 1;
+}
+
+sub parseHandins {
+    my ($mech, $assignment, $handins) = @_;
+
+    my $q = Query( text => getHTML($mech) );
+    my @header = map { $_->as_text } ($q->query('div.tablelisting table tr th')->get_elements);
+
+    my ($nameIdx) = grep { $header[$_] =~ /Name/ } (0 .. $#header);
+    my ($usernamesIdx) = grep { $header[$_] =~ /Username/ } (0 .. $#header);
+    my ($submissionTimeIdx) = grep { $header[$_] =~ /Submitted/ } (0 .. $#header);
+    my ($reviewDateIdx) = grep { $header[$_] =~ /Review/ } (0 .. $#header);
+    my ($statusIdx) = grep { $header[$_] =~ /Status/ } (0 .. $#header);
+    my ($scoreIdx) = grep { $header[$_] =~ /Score/ } (0 .. $#header);
+
+    my @rows = ($q->query('div.tablelisting table tr')->get_elements);
+    for my $tr (@rows) {
+        my $sq = Query($tr);
+        my @row = $sq->query('td')->get_elements;
+        next unless @row;
+
+        my @rowtext = map { $_->as_text } @row;
+
+        my $score;
+        if ($scoreIdx) {
+            $score = trim($rowtext[$scoreIdx]);
+        } else {
+            $score = "";
+        }
+
+        # Usernames and names are extracted by splitting on <br /> tags.
+        my @usernames = grep(length, split ( /<.*?>/, $row[$usernamesIdx]->as_HTML));
+        #my @names = grep(length, split ( /<.*?>/, $row[$nameIdx]->as_HTML));
+
+        my $sorted_users = join (":", sort { lc($a) cmp lc($b) } @usernames);
+
+        my $status;
+        if ($rowtext[$statusIdx] =~ m/.*\((.*?)\).*/) {
+            $status = $1;
+        } else {
+            $status = $rowtext[$statusIdx];
+        }
+
+        my $handin = {
+            assignment => $assignment->{title},
+            essayID => $assignment->{essayID},
+            usernames => $sorted_users,
+            submissionTime => $rowtext[$submissionTimeIdx],
+            reviewDate => $rowtext[$reviewDateIdx],
+            status => $status,
+            score => $score
+        };
+
+        push(@$handins, $handin);
+    }
+
+    return 1;
+}
+
+sub gotoNextPageOfHandins {
+    my $mech = shift;
+    
+    return 0 unless my $link = $mech->find_link( text_regex => qr/»/ );
+    my $next = $link->attrs->{id};
+    $next =~ s/_/\$/g;
+
+    $mech->form_id('ctl03');
+    $mech->set_fields('__EVENTTARGET' => $next);
+    $mech->submit_form();
+    return 1;
+}
+
+sub getHandin {
+    my ($mech, $assignment, $handins) = @_;
+    $mech->get(SITE . "essay/read_essay.aspx?EssayID=" . $assignment->{essayID});
+    do {
+        parseHandins($mech, $assignment, $handins);
+    } while (gotoNextPageOfHandins($mech))
+}
+
+sub getCourseInfo {
+    my ($mech) = @_;
+
+    $mech->get(SITE . "ContentArea/ContentArea.aspx?LocationID=" . COURSEID . "&LocationType=1");
+
+    my @title = Query( text => getHTML($mech),
+                       "h1.treemenu-title" )->get_elements();
+    
+    my $title = trim($title[0]->as_text());
+    return $title;
+}
+
+sub printCSV {
+    my ($table_ref, $keys_ref) = @_;
+    my @table = @{$table_ref};
+    my @keys = @{$keys_ref};
+
+    # Print column headers
+    my $i = 0;
+    for my $key ( @keys ) {
+        if ($key =~ m/.*,.*/) {
+            print '"' . $key . '"';
+        }
+        print $key;
+        print "," unless $i == $#keys;
+        $i = $i + 1;
+    }
+    print "\n";
+
+    # Print all rows
+    for my $row ( @table ) {
+        my $i = 0;
+        for my $k (@keys ) {
+            if ($row->{$k} =~ m/.*,.*/) {
+                print '"' . $row->{$k} . '"';
+            } else {
+                print $row->{$k};
+            }
+            print "," unless $i == $#keys;
+            $i = $i + 1;
+        }
+        print "\n";
+    }
+}
+
+sub printParticipants {
+    my ($participants) = @_;
+    my @keys = ("name", "username", "class", "role", "lastVisit");
+    printCSV($participants, \@keys);
+}
+
+
+sub printAssignments {
+    my ($assignments) = @_;
+    my @keys = ("title", "essayID", "deadline",
+                "answers", "maxScore", "mandatory", "groups");
+    printCSV($assignments, \@keys);
+}
+
+sub printHandins {
+    my ($handins_ref) = @_;
+    my @handins = @{$handins_ref};
+    my @keys = ("assignment", "essayID",
+                "username", "group", 
+                "score","status", 
+                "submissionTime", "reviewDate");
+
+
+    # Print all rows
+    my @flattened;
+    for my $handin ( @handins ) {
+        my @users = split(':', $handin->{usernames});
+        for my $user ( @users ) {
+            my $flat_handin = {
+                username       => $user,
+                assignment     => $handin->{assignment},
+                essayID        => $handin->{essayID},
+                submissionTime => $handin->{submissionTime},
+                reviewDate     => $handin->{reviewDate},
+                status         => $handin->{status},
+                score          => $handin->{score},
+                group          => $handin->{usernames}
+            };
+            push(@flattened, $flat_handin);
+        }
+    }
+    printCSV(\@flattened, \@keys);
+}
+
+sub saveParticipants {
+    my ($participants, $filename) = @_;
+    open(my $outfile, '>', $filename);
+    select($outfile);
+    printParticipants($participants);
+    close($outfile);
+}
+
+sub saveAssignments {
+    my ($assignments, $filename) = @_;
+    open(my $outfile, '>', $filename);
+    select($outfile);
+    printAssignments($assignments);
+    close($outfile);
+}
+
+sub saveHandins {
+    my ($handins, $filename) = @_;
+    open(my $outfile, '>', $filename);
+    select($outfile);
+    printHandins($handins);
+    close($outfile);
+}
+
+sub main {
+    my $mech = shift;
+    login($mech, SITE);
+
+    my $title = getCourseInfo($mech);
+
+    say "Reading list of participants.";
+    my @participants;
+    getParticipants($mech, \@participants);
+
+    my @assignments;
+    say "Reading assignment list";
+    getAssignmentList($mech, \@assignments);
+
+    my @handins;
+    for my $assignment (@assignments) {
+        say "Getting handins for: " . $assignment->{title};
+        getHandin($mech, $assignment, \@handins);
+    }
+
+    if (!-d OUTPUTDIR) {
+        make_path OUTPUTDIR or die "Failed to create directory: " . OUTPUTDIR;
+    }
+
+    saveParticipants(\@participants, OUTPUTDIR . "/participants.csv");
+    saveAssignments(\@assignments, OUTPUTDIR . "/assignments.csv");
+    saveHandins(\@handins, OUTPUTDIR . "/handins.csv");
+}
