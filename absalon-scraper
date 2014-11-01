@@ -12,18 +12,9 @@ use syntax qw/junction/;
 use IO::All -utf8;
 use FindBin qw/$Bin/;
 use File::Path qw(make_path);
+use YAML::Syck qw/LoadFile DumpFile/;
 
 use constant SITE => 'https://absalon.itslearning.com/';
-
-# Introduction to Programming info
-use constant OUTPUTDIR => 'data-ip';
-use constant COURSEID => 56287;
-use constant GROUPRX => qr/Øvehold (\d+)/;
-
-# Discrete Math info
-# use constant OUTPUTDIR => 'data-dims';
-# use constant GROUPRX => qr/Øvelseshold (\d+)/;
-# use constant COURSEID => 56211;
 
 my ($USERNAME, $PASSWORD) = io("$Bin/.absalon_credentials")->slurp =~ /^([^:]+):(.*)$/;
 
@@ -34,15 +25,6 @@ END
 
 chomp $USERNAME;
 chomp $PASSWORD;
-
-my $quiet = @ARGV >= 1 && $ARGV[0] eq '-quiet';
-
-my $mech = WWW::Mechanize->new();
-$mech->agent_alias('Windows Mozilla');
-
-local $| = 1;
-
-main($mech);
 
 sub getHTML {
     my $mech = shift;
@@ -63,13 +45,18 @@ sub login {
 }
 
 sub gotoParticipants {
-    my ($mech) = @_;
-    $mech->get(SITE . "Course/Participants.aspx?CourseID=" . COURSEID);
+    my ($mech, $courseinfo) = @_;
+    $mech->get(SITE . "Course/Participants.aspx?CourseID=" . $courseinfo->{absalonid});
 }
 
 sub gotoAssessmentReport {
-    my ($mech) = @_;
-    $mech->get(SITE . "AssessmentRecord/Assignments.aspx?CourseID=" . COURSEID);
+    my ($mech, $courseinfo) = @_;
+    $mech->get(SITE . "AssessmentRecord/Assignments.aspx?CourseID=" . $courseinfo->{absalonid});
+}
+
+sub gotoEssay {
+    my ($mech, $essayid) = @_;
+    $mech->get(SITE . "essay/read_essay.aspx?EssayID=" . $essayid);
 }
 
 sub trim {
@@ -83,9 +70,9 @@ sub getEssayID {
 }
 
 sub getAssignmentInfo {
-    my ($mech, $assignment) = @_;
+    my ($mech, $assignment, $handins) = @_;
 
-    $mech->get(SITE . "essay/read_essay.aspx?EssayID=" . $assignment->{essayID});
+    gotoEssay($mech, $assignment->{essayID});
 
     my @info_elements = Query( text => getHTML($mech), "ul.ccl-rwgm-row li.ccl-rwgm-column-1-3 ul li" );
     for my $li (@info_elements) {
@@ -113,31 +100,20 @@ sub getAssignmentInfo {
         }
     }
 
-    if(!$assignment->{maxScore}) {
-        $assignment->{maxScore} = "";
-    }
+    $assignment->{maxScore}  = "" unless $assignment->{maxScore};
+    $assignment->{deadline}  = "" unless $assignment->{deadline};
+    $assignment->{mandatory} = "" unless $assignment->{mandatory};
+    $assignment->{groups}    = "" unless $assignment->{groups};
+    $assignment->{answers}   = "" unless $assignment->{answers};
 
-    if(!$assignment->{deadline}) {
-        $assignment->{deadline} = "";
-    }
-
-    if(!$assignment->{mandatory}) {
-        $assignment->{mandatory} = "";
-    }
-
-    if(!$assignment->{groups}) {
-        $assignment->{groups} = "";
-    }
-
-    if(!$assignment->{answers}) {
-        $assignment->{answers} = "";
-    }
+    say "  Getting handins for: " . $assignment->{title};
+    getHandins($mech, $assignment, $handins);
 }
 
-sub getAssignmentList {
-    my ($mech, $assignments) = @_;
+sub getAssignments {
+    my ($mech, $courseinfo, $assignments, $handins) = @_;
 
-    gotoAssessmentReport($mech);
+    gotoAssessmentReport($mech, $courseinfo);
 
     my $q = Query( text => getHTML($mech) );
     my @header = ($q->query('tr th')->get_elements);
@@ -156,16 +132,14 @@ sub getAssignmentList {
         $assignment->{title} = $title;
         $assignment->{essayID} = getEssayID(@$url[0]);
 
-        getAssignmentInfo($mech,$assignment);
+        getAssignmentInfo($mech, $assignment, $handins);
 
         push(@$assignments, $assignment);
     }
 }
 
-
-
 sub parsePersons {
-    my ($mech, $persons) = @_;
+    my ($mech, $courseinfo, $persons) = @_;
 
     my $q = Query( text => getHTML($mech) );
     my @header = map { $_->as_text } ($q->query('thead tr th')->get_elements);
@@ -182,7 +156,7 @@ sub parsePersons {
 
         next unless $row[$usernameIdx];
 
-        my ($class) = ($row[$classIdx] // '') =~ GROUPRX;
+        my ($class) = ($row[$classIdx] // '') =~ $courseinfo->{exerciseClassRegex};
         
         if (!$class) {
             $class = "";
@@ -213,10 +187,10 @@ sub getNextPersonPage {
 }
 
 sub getParticipants {
-    my ($mech, $students) = @_;
-    gotoParticipants($mech);
+    my ($mech, $courseinfo, $students) = @_;
+    gotoParticipants($mech, $courseinfo);
     do {
-        parsePersons($mech, $students);
+        parsePersons($mech, $courseinfo, $students);
     } while (getNextPersonPage($mech));
 }
 
@@ -300,25 +274,24 @@ sub gotoNextPageOfHandins {
     return 1;
 }
 
-sub getHandin {
+sub getHandins {
     my ($mech, $assignment, $handins) = @_;
-    $mech->get(SITE . "essay/read_essay.aspx?EssayID=" . $assignment->{essayID});
     do {
         parseHandins($mech, $assignment, $handins);
     } while (gotoNextPageOfHandins($mech))
 }
 
-sub getCourseInfo {
-    my ($mech) = @_;
+# sub getCourseInfo {
+#     my ($mech) = @_;
 
-    $mech->get(SITE . "ContentArea/ContentArea.aspx?LocationID=" . COURSEID . "&LocationType=1");
+#     $mech->get(SITE . "ContentArea/ContentArea.aspx?LocationID=" . COURSEID . "&LocationType=1");
 
-    my @title = Query( text => getHTML($mech),
-                       "h1.treemenu-title" )->get_elements();
+#     my @title = Query( text => getHTML($mech),
+#                        "h1.treemenu-title" )->get_elements();
     
-    my $title = trim($title[0]->as_text());
-    return $title;
-}
+#     my $title = trim($title[0]->as_text());
+#     return $title;
+# }
 
 sub printCSV {
     my ($table_ref, $keys_ref) = @_;
@@ -399,10 +372,12 @@ sub printHandins {
 
 sub saveParticipants {
     my ($participants, $filename) = @_;
+    $filename =
     open(my $outfile, '>', $filename);
     select($outfile);
     printParticipants($participants);
     close($outfile);
+    select STDOUT;
 }
 
 sub saveAssignments {
@@ -411,6 +386,7 @@ sub saveAssignments {
     select($outfile);
     printAssignments($assignments);
     close($outfile);
+    select STDOUT;
 }
 
 sub saveHandins {
@@ -419,33 +395,57 @@ sub saveHandins {
     select($outfile);
     printHandins($handins);
     close($outfile);
+    select STDOUT;
 }
 
-sub main {
-    my $mech = shift;
-    login($mech, SITE);
+sub scrapeCourse {
+    my ($mech, $courseinfo, $dir) = @_;
 
-    my $title = getCourseInfo($mech);
+    my $heading = $courseinfo->{name} . " (" . $courseinfo->{edition} . " edition)";
+    say ($heading =~ s/./\-/gr);
+    say $heading;
+    say ($heading =~ s/./\-/gr);
 
     say "Reading list of participants.";
     my @participants;
-    getParticipants($mech, \@participants);
+    getParticipants($mech, $courseinfo, \@participants);
 
     my @assignments;
-    say "Reading assignment list";
-    getAssignmentList($mech, \@assignments);
-
     my @handins;
-    for my $assignment (@assignments) {
-        say "Getting handins for: " . $assignment->{title};
-        getHandin($mech, $assignment, \@handins);
+    say "Reading list of assignments.";
+    getAssignments($mech, $courseinfo, \@assignments, \@handins);
+
+    if (!-d $dir) {
+        make_path $dir or die "Failed to create directory: " . $dir;
     }
 
-    if (!-d OUTPUTDIR) {
-        make_path OUTPUTDIR or die "Failed to create directory: " . OUTPUTDIR;
-    }
-
-    saveParticipants(\@participants, OUTPUTDIR . "/participants.csv");
-    saveAssignments(\@assignments, OUTPUTDIR . "/assignments.csv");
-    saveHandins(\@handins, OUTPUTDIR . "/handins.csv");
+    saveParticipants(\@participants, $dir . "/participants.csv");
+    saveAssignments(\@assignments, $dir . "/assignments.csv");
+    saveHandins(\@handins, $dir . "/handins.csv");
+    DumpFile($dir . "/config.yaml", $courseinfo);
 }
+
+
+sub main {
+    my @courses = LoadFile("./config.yaml");
+    if (scalar @courses == 0) {
+        say "No courses in config.yaml";
+        exit(1);
+    }
+    if (scalar @courses > 1) {
+        say "More than one configuration object in config.yaml - I don't know what to do!";
+        exit(1);
+    }
+
+    my $mech = WWW::Mechanize->new();
+    $mech->agent_alias('Windows Mozilla');
+    login($mech, SITE);
+
+    scrapeCourse($mech, $courses[0], ".");
+    say "Saved to current working directory";
+}
+
+
+
+local $| = 1;
+main ();
