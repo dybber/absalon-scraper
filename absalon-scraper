@@ -438,14 +438,14 @@ sub updateCourse {
 sub interactiveConfig {
     print "Enter course title: ";
     my $title=<STDIN>;
-    print "Enter CourseId from Absalon (look at the URL of your course): ";
-    my $courseid=<STDIN>;
     print "Enter course abbreviation: ";
     my $abbreviation=<STDIN>;
     print "Enter study year (20092010 for the year starting Sept. 2009): ";
     my $year=<STDIN>;
-    print "Enter bloc (B1,B2,B3,B4) or semester (Fall, Spring, Summer): ";
+    print "Enter bloc (B1,B2,B3,B4,B5) or semester (Fall, Spring): ";
     my $bloc=<STDIN>;
+    print "Enter CourseID from Absalon (look at the URL of your course): ";
+    my $courseid=<STDIN>;
     print "Enter regex matching exercise class names (Hold (\\d+)): ";
     my $regex=<STDIN>;
 
@@ -457,7 +457,7 @@ sub interactiveConfig {
 
     return (
         title              => $title,
-        courseid           => $abbreviation,
+        courseid           => $courseid,
         edition            => $year . "-" . $bloc,
         abbreviation       => $abbreviation,
         exerciseClassRegex => $regex
