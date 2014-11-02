@@ -61,7 +61,9 @@ Installation
 I *think* this all these packages are needed, but it might be too
 many. Getting that sorted out is on the TODO-list :-)
 
-```sudo apt-get install libutf8-all-perl libdatetime-perl \
+```
+sudo apt-get install libutf8-all-perl libdatetime-perl \
       libdatetime-format-strptime-perl libwww-mechanize-perl libsyntax-perl \
       libsub-exporter-progressive-perl libsub-exporter-perl libio-all-perl \
-      libjson-perl```
+      libyaml-syck-perl
+```

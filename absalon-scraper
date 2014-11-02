@@ -425,27 +425,90 @@ sub scrapeCourse {
     DumpFile($dir . "/config.yaml", $courseinfo);
 }
 
-
-sub main {
-    my @courses = LoadFile("./config.yaml");
-    if (scalar @courses == 0) {
-        say "No courses in config.yaml";
-        exit(1);
-    }
-    if (scalar @courses > 1) {
-        say "More than one configuration object in config.yaml - I don't know what to do!";
-        exit(1);
-    }
-
+sub updateCourse {
+    my ($courseinfo) = @_;
     my $mech = WWW::Mechanize->new();
     $mech->agent_alias('Windows Mozilla');
     login($mech, SITE);
 
-    scrapeCourse($mech, $courses[0], ".");
+    scrapeCourse($mech, $courseinfo, ".");
     say "Saved to current working directory";
 }
 
+sub interactiveConfig {
+    print "Enter course title: ";
+    my $title=<STDIN>;
+    print "Enter CourseId from Absalon (look at the URL of your course): ";
+    my $absalonid=<STDIN>;
+    print "Enter course abbreviation: ";
+    my $abbreviation=<STDIN>;
+    print "Enter study year (20092010 for the year starting Sept. 2009): ";
+    my $year=<STDIN>;
+    print "Enter bloc (B1,B2,B3,B4) or semester (Fall, Spring, Summer): ";
+    my $bloc=<STDIN>;
+    print "Enter regex matching exercise class names (Hold (\\d+)): ";
+    my $regex=<STDIN>;
 
+    chomp $title;
+    chomp $abbreviation;
+    chomp $year;
+    chomp $bloc;
+    chomp $regex;
+
+    return (
+        name               => $title,
+        absalonid          => $abbreviation,
+        edition            => $year . "-" . $bloc,
+        abbreviation       => $abbreviation,
+        exerciseClassRegex => $regex
+    );
+}
+
+sub displayHelp {
+    say "usage $0 <command> [<args>]";
+    say "";
+    say "Commands:";
+    say "\tnew \t Create course configuration (interactive)";
+    say "\tupdate\t Fetches a course or updates existing";
+    say "\thelp\t Display this help message";
+}
+
+sub main {
+    if (scalar @ARGV < 1) {
+        displayHelp();
+        exit(1);
+    }
+    my $command = $ARGV[0];
+
+    if ($command eq "new") {
+        my %courseinfo = interactiveConfig();
+        
+        my $dir = $courseinfo{edition} . "-" . $courseinfo{abbreviation};
+        if (-d $dir) {
+            say "Directory (./$dir) already exists. Exiting.";
+            exit(1);
+        } 
+        else {
+            make_path $dir or die "Failed to create directory: " . $dir;
+        }
+
+        DumpFile("./$dir/config.yaml", \%courseinfo);
+    }
+    elsif ($command eq "update") {
+        my @courses = LoadFile("./config.yaml");
+        if (scalar @courses == 0) {
+            say "No courses in config.yaml";
+            exit(1);
+        }
+        elsif (scalar @courses > 1) {
+            say "More than one configuration object in config.yaml - I don't know what to do!";
+            exit(1);
+        }
+        updateCourse($courses[0]);
+    } else {
+        displayHelp();
+    }
+}
 
 local $| = 1;
 main ();
