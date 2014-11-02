@@ -46,12 +46,12 @@ sub login {
 
 sub gotoParticipants {
     my ($mech, $courseinfo) = @_;
-    $mech->get(SITE . "Course/Participants.aspx?CourseID=" . $courseinfo->{absalonid});
+    $mech->get(SITE . "Course/Participants.aspx?CourseID=" . $courseinfo->{courseid});
 }
 
 sub gotoAssessmentReport {
     my ($mech, $courseinfo) = @_;
-    $mech->get(SITE . "AssessmentRecord/Assignments.aspx?CourseID=" . $courseinfo->{absalonid});
+    $mech->get(SITE . "AssessmentRecord/Assignments.aspx?CourseID=" . $courseinfo->{courseid});
 }
 
 sub gotoEssay {
@@ -401,7 +401,7 @@ sub saveHandins {
 sub scrapeCourse {
     my ($mech, $courseinfo, $dir) = @_;
 
-    my $heading = $courseinfo->{name} . " (" . $courseinfo->{edition} . " edition)";
+    my $heading = $courseinfo->{title} . " (" . $courseinfo->{edition} . " edition)";
     say ($heading =~ s/./\-/gr);
     say $heading;
     say ($heading =~ s/./\-/gr);
@@ -439,7 +439,7 @@ sub interactiveConfig {
     print "Enter course title: ";
     my $title=<STDIN>;
     print "Enter CourseId from Absalon (look at the URL of your course): ";
-    my $absalonid=<STDIN>;
+    my $courseid=<STDIN>;
     print "Enter course abbreviation: ";
     my $abbreviation=<STDIN>;
     print "Enter study year (20092010 for the year starting Sept. 2009): ";
@@ -456,8 +456,8 @@ sub interactiveConfig {
     chomp $regex;
 
     return (
-        name               => $title,
-        absalonid          => $abbreviation,
+        title              => $title,
+        courseid           => $abbreviation,
         edition            => $year . "-" . $bloc,
         abbreviation       => $abbreviation,
         exerciseClassRegex => $regex

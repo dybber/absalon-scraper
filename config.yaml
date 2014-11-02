@@ -1,6 +1,6 @@
 ---
-absalonid: 56287
-name: Introduktion til Programmering
-shortname: IP
+courseid: 56287
+title: Introduktion til Programmering
+abbreviation: IP
 edition: 20142015-B1
 exerciseClassRegex: Øvehold (\d+)
