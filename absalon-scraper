@@ -13,6 +13,8 @@ use IO::All -utf8;
 use FindBin qw/$Bin/;
 use File::Path qw(make_path);
 use YAML::Syck qw/LoadFile DumpFile/;
+use Text::CSV::Slurp qw/create load/;
+use List::MoreUtils qw(uniq);
 
 use constant SITE => 'https://absalon.itslearning.com/';
 
@@ -162,7 +164,6 @@ sub parsePersons {
             $class = "";
         }
 
-
         my $person = {class => $class,
                       name  => $row[$nameIdx],
                       username => $row[$usernameIdx],
@@ -192,16 +193,6 @@ sub getParticipants {
     do {
         parsePersons($mech, $courseinfo, $students);
     } while (getNextPersonPage($mech));
-}
-
-sub isString {
-    my $TestData = $_[0];
-
-    return if scalar @_ ne 1;
-    return if ref $TestData;
-    return if !defined $TestData;
-
-    return 1;
 }
 
 sub parseHandins {
@@ -281,73 +272,44 @@ sub getHandins {
     } while (gotoNextPageOfHandins($mech))
 }
 
-# sub getCourseInfo {
-#     my ($mech) = @_;
-
-#     $mech->get(SITE . "ContentArea/ContentArea.aspx?LocationID=" . COURSEID . "&LocationType=1");
-
-#     my @title = Query( text => getHTML($mech),
-#                        "h1.treemenu-title" )->get_elements();
-    
-#     my $title = trim($title[0]->as_text());
-#     return $title;
-# }
-
-sub printCSV {
-    my ($table_ref, $keys_ref) = @_;
-    my @table = @{$table_ref};
-    my @keys = @{$keys_ref};
-
-    # Print column headers
-    my $i = 0;
-    for my $key ( @keys ) {
-        if ($key =~ m/.*,.*/) {
-            print '"' . $key . '"';
-        }
-        print $key;
-        print "," unless $i == $#keys;
-        $i = $i + 1;
-    }
-    print "\n";
-
-    # Print all rows
-    for my $row ( @table ) {
-        my $i = 0;
-        for my $k (@keys ) {
-            if ($row->{$k} =~ m/.*,.*/) {
-                print '"' . $row->{$k} . '"';
-            } else {
-                print $row->{$k};
-            }
-            print "," unless $i == $#keys;
-            $i = $i + 1;
-        }
-        print "\n";
-    }
+sub save {
+    my ($data, $filename, $pprinter) = @_;
+    open(my $fh, '>', $filename);
+    select($fh);
+    $pprinter->($data);
+    close($fh);
+    select STDOUT;
 }
 
 sub printParticipants {
     my ($participants) = @_;
-    my @keys = ("name", "username", "class", "role", "lastVisit");
-    printCSV($participants, \@keys);
+    print Text::CSV::Slurp->create( 
+        input => $participants,
+        field_order => ["name", "username", "class", "role"]);
 }
 
+sub printLastVisits {
+    my ($participants) = @_;
+    print Text::CSV::Slurp->create( 
+        input => $participants,
+        field_order => ["username", "lastVisit"]);
+}
 
 sub printAssignments {
     my ($assignments) = @_;
-    my @keys = ("title", "essayID", "deadline",
-                "answers", "maxScore", "mandatory", "groups");
-    printCSV($assignments, \@keys);
+    print Text::CSV::Slurp->create( 
+        input => $assignments,
+        field_order => ["title", "essayID", "deadline",
+                        "answers", "maxScore", "mandatory", "groups"]);
 }
 
 sub printHandins {
     my ($handins_ref) = @_;
     my @handins = @{$handins_ref};
-    my @keys = ("assignment", "essayID",
+    my @keys = ["assignment", "essayID",
                 "username", "group", 
                 "score","status", 
-                "submissionTime", "reviewDate");
-
+                "submissionTime", "reviewDate"];
 
     # Print all rows
     my @flattened;
@@ -367,39 +329,16 @@ sub printHandins {
             push(@flattened, $flat_handin);
         }
     }
-    printCSV(\@flattened, \@keys);
-}
 
-sub saveParticipants {
-    my ($participants, $filename) = @_;
-    $filename =
-    open(my $outfile, '>', $filename);
-    select($outfile);
-    printParticipants($participants);
-    close($outfile);
-    select STDOUT;
-}
+    print Text::CSV::Slurp->create( 
+        input => \@flattened,
+        field_order => @keys);
 
-sub saveAssignments {
-    my ($assignments, $filename) = @_;
-    open(my $outfile, '>', $filename);
-    select($outfile);
-    printAssignments($assignments);
-    close($outfile);
-    select STDOUT;
-}
-
-sub saveHandins {
-    my ($handins, $filename) = @_;
-    open(my $outfile, '>', $filename);
-    select($outfile);
-    printHandins($handins);
-    close($outfile);
-    select STDOUT;
 }
 
 sub scrapeCourse {
-    my ($mech, $courseinfo, $dir) = @_;
+    my ($mech, $courseinfo, $dir,
+        $participants, $assignments, $handins) = @_;
 
     my $heading = $courseinfo->{title} . " (" . $courseinfo->{edition} . " edition)";
     say ($heading =~ s/./\-/gr);
@@ -407,32 +346,114 @@ sub scrapeCourse {
     say ($heading =~ s/./\-/gr);
 
     say "Reading list of participants.";
-    my @participants;
-    getParticipants($mech, $courseinfo, \@participants);
 
+    getParticipants($mech, $courseinfo, $participants);
+
+    say "Reading list of assignments.";
+    getAssignments($mech, $courseinfo, $assignments, $handins);
+}
+
+# sub nubBy {
+#     my ($f, $ls) = @_;
+ 
+#     my $index = 0;
+#     my %seen;
+#     for my $e (0 .. $#{$ls}) {
+#         my $key = $f->(@$ls[$index]);
+#          if ($seen{$key}) {
+#              splice @$ls, $index, 1;
+#          }
+#          else {
+#              $index++;
+#          }
+#          $seen{$key} = 1;
+#     }
+# }
+
+sub updateBy {
+    my ($f, $old, $new) = @_;
+ 
+    my %seen;
+
+    for my $e (@$old) {
+        my $key = $f->($e);
+        $seen{$key} = 1;
+    }
+
+    for my $e (@$new) {
+        my $key = $f->($e);
+        if (!$seen{$key}) {
+            $seen{$key} = 1;
+            push(@$old, $e);
+        }
+    }
+}
+
+sub getUsername {
+    my ($user) = @_;
+    return $user->{username};
+}
+
+sub getUsernameAndVisit {
+    my ($user) = @_;
+    return $user->{username} . $user->{lastVisit};
+}
+
+sub timestampNow {
+    my $now = DateTime->now( time_zone => 'local' );
+    return $now->strftime("%Y%m%d-%H%M");
+}
+
+sub updateCourse {
+    my ($mech, $courseinfo, $dir) = @_;
+
+    # Filenames
+    my $participantsFile = $dir . "/participants.csv";
+    my $visitsFile = $dir . "/visits.csv";
+    my $assignmentsFile = $dir . "/assignments.csv";
+    my $handinsFile = $dir . "/handins-" . timestampNow() . ".csv";
+
+    # Get new info
+    my @participants;
     my @assignments;
     my @handins;
-    say "Reading list of assignments.";
-    getAssignments($mech, $courseinfo, \@assignments, \@handins);
+    scrapeCourse($mech, $courseinfo, $dir,
+                 \@participants, \@assignments, \@handins);
 
+    my @visits;
+    for my $person (@participants) {
+        my $v = {username => $person->{username},
+                 lastVisit => $person->{lastVisit}};
+        push(@visits, $v);
+    }
+
+    my $oldparticipants = [];
+    if (-e $participantsFile) {
+        $oldparticipants = Text::CSV::Slurp->load(file => $participantsFile);
+    }
+
+    my $oldvisits = [];
+    if (-e $visitsFile) {
+        $oldvisits = Text::CSV::Slurp->load(file => $visitsFile);
+    }
+
+    updateBy(\&getUsernameAndVisit, $oldvisits, \@visits);
+    updateBy(\&getUsername, $oldparticipants, \@participants);
+
+    # Save everything
     if (!-d $dir) {
         make_path $dir or die "Failed to create directory: " . $dir;
     }
 
-    saveParticipants(\@participants, $dir . "/participants.csv");
-    saveAssignments(\@assignments, $dir . "/assignments.csv");
-    saveHandins(\@handins, $dir . "/handins.csv");
     DumpFile($dir . "/config.yaml", $courseinfo);
-}
+    save($oldparticipants, $participantsFile, \&printParticipants);
+    save($oldvisits,       $visitsFile,       \&printLastVisits);
+    save(\@assignments,    $assignmentsFile,  \&printAssignments);
+    save(\@handins,        $handinsFile,      \&printHandins);
 
-sub updateCourse {
-    my ($courseinfo) = @_;
-    my $mech = WWW::Mechanize->new();
-    $mech->agent_alias('Windows Mozilla');
-    login($mech, SITE);
-
-    scrapeCourse($mech, $courseinfo, ".");
-    say "Saved to current working directory";
+    # Symlink handins.csv to new timestamped handins-file
+    unlink("handins.csv");
+    symlink ($handinsFile, "handins.csv");
 }
 
 sub interactiveConfig {
@@ -468,9 +489,9 @@ sub displayHelp {
     say "usage $0 <command> [<args>]";
     say "";
     say "Commands:";
-    say "\tnew \t Create course configuration (interactive)";
+    say "\tnew   \t Create course configuration (interactive)";
     say "\tupdate\t Fetches a course or updates existing";
-    say "\thelp\t Display this help message";
+    say "\thelp  \t Display this help message";
 }
 
 sub main {
@@ -504,7 +525,12 @@ sub main {
             say "More than one configuration object in config.yaml - I don't know what to do!";
             exit(1);
         }
-        updateCourse($courses[0]);
+        my $mech = WWW::Mechanize->new();
+        $mech->agent_alias('Windows Mozilla');
+        login($mech, SITE);
+
+        updateCourse($mech, $courses[0], ".");
+        say "Saved to current working directory.";
     } else {
         displayHelp();
     }
