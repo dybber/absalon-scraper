@@ -18,30 +18,23 @@ use List::MoreUtils qw(uniq);
 
 use constant SITE => 'https://absalon.itslearning.com/';
 
-my ($USERNAME, $PASSWORD) = io("$Bin/.absalon_credentials")->slurp =~ /^([^:]+):(.*)$/;
-
-die(<<END) unless $USERNAME;
-Place a file named '.absalon_credentials' in the folder you run the program from.
-In it, put username:password for absalon.itslearning.com login.
-END
-
-chomp $USERNAME;
-chomp $PASSWORD;
-
+################################################################################
+################################### Scraping ###################################
+################################################################################
 sub getHTML {
     my $mech = shift;
     return $mech->response->decoded_content;
 }
 
 sub login {
-    my ($mech, $site) = @_;
+    my ($mech, $username, $password) = @_;
 
-    $mech->get($site);
+    $mech->get(SITE);
     $mech->submit_form(
         with_fields => {
             '__EVENTTARGET' => 'ctl00$ContentPlaceHolder1$nativeLoginButton',
-            'ctl00$ContentPlaceHolder1$Username$input' => $USERNAME,
-            'ctl00$ContentPlaceHolder1$Password$input' => $PASSWORD,
+            'ctl00$ContentPlaceHolder1$Username$input' => $username,
+            'ctl00$ContentPlaceHolder1$Password$input' => $password,
         },
     );
 }
@@ -61,13 +54,13 @@ sub gotoEssay {
     $mech->get(SITE . "essay/read_essay.aspx?EssayID=" . $essayid);
 }
 
-sub trim {
-    my ($res) = shift =~ /^\s*(.*?)\s*$/;
+sub getEssayID {
+    my ($res) = shift =~ /.*\?EssayID=(\d+).*/;
     return $res;
 }
 
-sub getEssayID {
-    my ($res) = shift =~ /.*\?EssayID=(\d+).*/;
+sub trim {
+    my ($res) = shift =~ /^\s*(.*?)\s*$/;
     return $res;
 }
 
@@ -272,6 +265,26 @@ sub getHandins {
     } while (gotoNextPageOfHandins($mech))
 }
 
+sub scrapeCourse {
+    my ($mech, $courseinfo, $dir,
+        $participants, $assignments, $handins) = @_;
+
+    my $heading = $courseinfo->{title} . " (" . $courseinfo->{edition} . " edition)";
+    say ($heading =~ s/./\-/gr);
+    say $heading;
+    say ($heading =~ s/./\-/gr);
+
+    say "Reading list of participants.";
+
+    getParticipants($mech, $courseinfo, $participants);
+
+    say "Reading list of assignments.";
+    getAssignments($mech, $courseinfo, $assignments, $handins);
+}
+
+################################################################################
+############################ Pretty printing to CSV ############################
+################################################################################
 sub save {
     my ($data, $filename, $pprinter) = @_;
     open(my $fh, '>', $filename);
@@ -336,45 +349,14 @@ sub printHandins {
 
 }
 
-sub scrapeCourse {
-    my ($mech, $courseinfo, $dir,
-        $participants, $assignments, $handins) = @_;
 
-    my $heading = $courseinfo->{title} . " (" . $courseinfo->{edition} . " edition)";
-    say ($heading =~ s/./\-/gr);
-    say $heading;
-    say ($heading =~ s/./\-/gr);
-
-    say "Reading list of participants.";
-
-    getParticipants($mech, $courseinfo, $participants);
-
-    say "Reading list of assignments.";
-    getAssignments($mech, $courseinfo, $assignments, $handins);
-}
-
-# sub nubBy {
-#     my ($f, $ls) = @_;
- 
-#     my $index = 0;
-#     my %seen;
-#     for my $e (0 .. $#{$ls}) {
-#         my $key = $f->(@$ls[$index]);
-#          if ($seen{$key}) {
-#              splice @$ls, $index, 1;
-#          }
-#          else {
-#              $index++;
-#          }
-#          $seen{$key} = 1;
-#     }
-# }
-
+################################################################################
+############################# Update existing data #############################
+################################################################################
 sub updateBy {
     my ($f, $old, $new) = @_;
  
     my %seen;
-
     for my $e (@$old) {
         my $key = $f->($e);
         $seen{$key} = 1;
@@ -437,8 +419,11 @@ sub updateCourse {
         $oldvisits = Text::CSV::Slurp->load(file => $visitsFile);
     }
 
+    ## Add new visits, but keep all the old ones
     updateBy(\&getUsernameAndVisit, $oldvisits, \@visits);
-    updateBy(\&getUsername, $oldparticipants, \@participants);
+
+    ## Add the old participants which might have been removed
+    updateBy(\&getUsername, \@participants, $oldparticipants);
 
     # Save everything
     if (!-d $dir) {
@@ -446,7 +431,7 @@ sub updateCourse {
     }
 
     DumpFile($dir . "/config.yaml", $courseinfo);
-    save($oldparticipants, $participantsFile, \&printParticipants);
+    save(\@participants,   $participantsFile, \&printParticipants);
     save($oldvisits,       $visitsFile,       \&printLastVisits);
     save(\@assignments,    $assignmentsFile,  \&printAssignments);
     save(\@handins,        $handinsFile,      \&printHandins);
@@ -456,6 +441,10 @@ sub updateCourse {
     symlink ($handinsFile, "handins.csv");
 }
 
+
+################################################################################
+############################ Command line interface ############################
+################################################################################
 sub interactiveConfig {
     print "Enter course title: ";
     my $title=<STDIN>;
@@ -525,9 +514,19 @@ sub main {
             say "More than one configuration object in config.yaml - I don't know what to do!";
             exit(1);
         }
+
+        my ($username, $password) = io("$Bin/.absalon_credentials")->slurp =~ /^([^:]+):(.*)$/;
+        unless ($username) {
+            say "Place a file named '.absalon_credentials' in the folder you run the program from.";
+            say "In it, put username:password for absalon.itslearning.com login.";
+            exit(-1);
+        }
+        chomp $username;
+        chomp $password;
+
         my $mech = WWW::Mechanize->new();
         $mech->agent_alias('Windows Mozilla');
-        login($mech, SITE);
+        login($mech, $username, $password);
 
         updateCourse($mech, $courses[0], ".");
         say "Saved to current working directory.";
