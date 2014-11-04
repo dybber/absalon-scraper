@@ -6,15 +6,12 @@ use utf8::all;
 use DateTime;
 use WWW::Mechanize;
 use HTML::Query qw(Query);
-use Data::Dumper;
-use List::Util qw/min max/;
-use syntax qw/junction/;
+#use Data::Dumper;
 use IO::All -utf8;
 use FindBin qw/$Bin/;
 use File::Path qw(make_path);
 use YAML::Syck qw/LoadFile DumpFile/;
 use Text::CSV::Slurp qw/create load/;
-use List::MoreUtils qw(uniq);
 
 use constant SITE => 'https://absalon.itslearning.com/';
 
@@ -28,7 +25,6 @@ sub getHTML {
 
 sub login {
     my ($mech, $username, $password) = @_;
-
     $mech->get(SITE);
     $mech->submit_form(
         with_fields => {
@@ -138,11 +134,11 @@ sub parsePersons {
 
     my $q = Query( text => getHTML($mech) );
     my @header = map { $_->as_text } ($q->query('thead tr th')->get_elements);
-    my ($classIdx) = grep { $header[$_] =~ /Group/ } (0 .. $#header);
-    my ($nameIdx) = grep { $header[$_] =~ /Name/ } (0 .. $#header);
-    my ($roleIdx) = grep { $header[$_] =~ /Role/ } (0 .. $#header);
+    my ($classIdx)     = grep { $header[$_] =~ /Group/ }      (0 .. $#header);
+    my ($nameIdx)      = grep { $header[$_] =~ /Name/ }       (0 .. $#header);
+    my ($roleIdx)      = grep { $header[$_] =~ /Role/ }       (0 .. $#header);
     my ($lastVisitIdx) = grep { $header[$_] =~ /Last visit/ } (0 .. $#header);
-    my ($usernameIdx) = grep { $header[$_] =~ /Username/ } (0 .. $#header);
+    my ($usernameIdx)  = grep { $header[$_] =~ /Username/ }   (0 .. $#header);
 
     my @rows = ($q->query('tr')->get_elements);
     for my $tr (@rows) {
@@ -194,12 +190,12 @@ sub parseHandins {
     my $q = Query( text => getHTML($mech) );
     my @header = map { $_->as_text } ($q->query('div.tablelisting table tr th')->get_elements);
 
-    my ($nameIdx) = grep { $header[$_] =~ /Name/ } (0 .. $#header);
-    my ($usernamesIdx) = grep { $header[$_] =~ /Username/ } (0 .. $#header);
+    my ($nameIdx)           = grep { $header[$_] =~ /Name/ }      (0 .. $#header);
+    my ($usernamesIdx)      = grep { $header[$_] =~ /Username/ }  (0 .. $#header);
     my ($submissionTimeIdx) = grep { $header[$_] =~ /Submitted/ } (0 .. $#header);
-    my ($reviewDateIdx) = grep { $header[$_] =~ /Review/ } (0 .. $#header);
-    my ($statusIdx) = grep { $header[$_] =~ /Status/ } (0 .. $#header);
-    my ($scoreIdx) = grep { $header[$_] =~ /Score/ } (0 .. $#header);
+    my ($reviewDateIdx)     = grep { $header[$_] =~ /Review/ }    (0 .. $#header);
+    my ($statusIdx)         = grep { $header[$_] =~ /Status/ }    (0 .. $#header);
+    my ($scoreIdx)          = grep { $header[$_] =~ /Score/ }     (0 .. $#header);
 
     my @rows = ($q->query('div.tablelisting table tr')->get_elements);
     for my $tr (@rows) {
@@ -232,7 +228,7 @@ sub parseHandins {
         my $handin = {
             assignment => $assignment->{title},
             essayID => $assignment->{essayID},
-            usernames => $sorted_users,
+            group => $sorted_users,
             submissionTime => $rowtext[$submissionTimeIdx],
             reviewDate => $rowtext[$reviewDateIdx],
             status => $status,
@@ -317,38 +313,25 @@ sub printAssignments {
 }
 
 sub printHandins {
-    my ($handins_ref) = @_;
-    my @handins = @{$handins_ref};
-    my @keys = ["assignment", "essayID",
-                "username", "group", 
-                "score","status", 
-                "submissionTime", "reviewDate"];
+    my ($handins) = @_;
 
-    # Print all rows
+    # Make one row for each user, instead of each group
     my @flattened;
-    for my $handin ( @handins ) {
-        my @users = split(':', $handin->{usernames});
+    for my $handin ( @$handins ) {
+        my @users = split(':', $handin->{group});
         for my $user ( @users ) {
-            my $flat_handin = {
-                username       => $user,
-                assignment     => $handin->{assignment},
-                essayID        => $handin->{essayID},
-                submissionTime => $handin->{submissionTime},
-                reviewDate     => $handin->{reviewDate},
-                status         => $handin->{status},
-                score          => $handin->{score},
-                group          => $handin->{usernames}
-            };
-            push(@flattened, $flat_handin);
+            my $copy = { %$handin };
+            $copy->{username} = $user;
+            push(@flattened, $copy);
         }
     }
 
     print Text::CSV::Slurp->create( 
         input => \@flattened,
-        field_order => @keys);
-
+        field_order => ["assignment", "essayID", "username", "group", 
+                        "score","status", "submissionTime",
+                        "reviewDate"]);
 }
-
 
 ################################################################################
 ############################# Update existing data #############################
