@@ -196,6 +196,7 @@ sub parseHandins {
     my ($reviewDateIdx)     = grep { $header[$_] =~ /Review/ }    (0 .. $#header);
     my ($statusIdx)         = grep { $header[$_] =~ /Status/ }    (0 .. $#header);
     my ($scoreIdx)          = grep { $header[$_] =~ /Score/ }     (0 .. $#header);
+    my ($assessmentIdx)     = grep { $header[$_] =~ /Assessment/ }(0 .. $#header);
 
     my @rows = ($q->query('div.tablelisting table tr')->get_elements);
     for my $tr (@rows) {
@@ -210,6 +211,14 @@ sub parseHandins {
             $score = trim($rowtext[$scoreIdx]);
         } else {
             $score = "";
+        }
+
+        my $assessment = "";
+        if ($assessmentIdx) {
+            $assessment = trim($rowtext[$assessmentIdx]);
+            if ($assessment =~ m/.*\((.*?)\).*/) {
+                $assessment = $1;
+            }
         }
 
         # Usernames and names are extracted by splitting on <br /> tags.
@@ -232,7 +241,8 @@ sub parseHandins {
             submissionTime => $rowtext[$submissionTimeIdx],
             reviewDate => $rowtext[$reviewDateIdx],
             status => $status,
-            score => $score
+            score => $score,
+            assessment => $assessment
         };
 
         push(@$handins, $handin);
@@ -329,7 +339,7 @@ sub printHandins {
     print Text::CSV::Slurp->create( 
         input => \@flattened,
         field_order => ["assignment", "essayID", "username", "group", 
-                        "score","status", "submissionTime",
+                        "score","assessment","status", "submissionTime",
                         "reviewDate"]);
 }
 
