@@ -147,7 +147,7 @@ sub parsePersons {
 
         next unless $row[$usernameIdx];
 
-        my ($class) = ($row[$classIdx] // '') =~ $courseinfo->{exerciseClassRegex};
+        my ($class) = ($row[$classIdx] // '') =~ qr/$courseinfo->{exerciseClassRegex}/;
         
         if (!$class) {
             $class = "";
