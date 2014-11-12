@@ -453,6 +453,7 @@ sub interactiveConfig {
     my $regex=<STDIN>;
 
     chomp $title;
+    chomp $courseid;
     chomp $abbreviation;
     chomp $year;
     chomp $bloc;
