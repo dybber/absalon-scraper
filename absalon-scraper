@@ -424,14 +424,29 @@ sub updateCourse {
     }
 
     DumpFile($dir . "/config.yaml", $courseinfo);
-    save(\@participants,   $participantsFile, \&printParticipants);
-    save($oldvisits,       $visitsFile,       \&printLastVisits);
-    save(\@assignments,    $assignmentsFile,  \&printAssignments);
-    save(\@handins,        $handinsFile,      \&printHandins);
 
-    # Symlink handins.csv to new timestamped handins-file
-    unlink("handins.csv");
-    symlink ($handinsFile, "handins.csv");
+    if (scalar @participants == 0) {
+        say "No participants. This is probably an error in absalon-scraper."
+    } else {
+        save(\@participants,   $participantsFile, \&printParticipants);
+        save($oldvisits,       $visitsFile,       \&printLastVisits);
+    }
+
+    if (scalar @assignments == 0) {
+        say "No assignments."
+    } else {
+        save(\@assignments,    $assignmentsFile,  \&printAssignments);
+    }
+
+    if (scalar @handins == 0) {
+        say "No handins."
+    } else {
+        save(\@handins,        $handinsFile,      \&printHandins);
+
+        # Symlink handins.csv to new timestamped handins-file
+        unlink("handins.csv");
+        symlink ($handinsFile, "handins.csv");
+    }
 }
 
 
