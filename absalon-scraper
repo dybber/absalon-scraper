@@ -12,6 +12,7 @@ use FindBin qw/$Bin/;
 use File::Path qw(make_path);
 use YAML::Syck qw/LoadFile DumpFile/;
 use Text::CSV::Slurp qw/create load/;
+use Digest::MD5 qw(md5_base64);
 
 use constant SITE => 'https://absalon.itslearning.com/';
 
@@ -45,6 +46,16 @@ sub gotoAssessmentReport {
     $mech->get(SITE . "AssessmentRecord/Assignments.aspx?CourseID=" . $courseinfo->{courseid});
 }
 
+sub gotoSummaryReport {
+    my ($mech, $courseinfo) = @_;
+    $mech->get(SITE . "Status/SummaryReport.aspx?CourseID=" . $courseinfo->{courseid});
+}
+
+sub gotoTestReport {
+    my ($mech, $testid) = @_;
+    $mech->get(SITE . "Ntt/EditTool/ViewTestTeacher_Main.aspx?TestID=" . $testid);
+}
+
 sub gotoEssay {
     my ($mech, $essayid) = @_;
     $mech->get(SITE . "essay/read_essay.aspx?EssayID=" . $essayid);
@@ -52,6 +63,11 @@ sub gotoEssay {
 
 sub getEssayID {
     my ($res) = shift =~ /.*\?EssayID=(\d+).*/;
+    return $res;
+}
+
+sub getTestID {
+    my ($res) = shift =~ /.*\?TestID=(\d+).*/;
     return $res;
 }
 
@@ -72,7 +88,7 @@ sub getAssignmentInfo {
             $assignment->{deadline} = $1;
         }
         elsif (m/Published: (\d+ \w+ \d+ \d+:\d+).*/) {
-            $assignment->{deadline} = $1;
+            $assignment->{publicationdate} = $1;
         }
         elsif (m/Mandatory: (Yes|No).*/) {
             $assignment->{mandatory} = $1;
@@ -93,6 +109,7 @@ sub getAssignmentInfo {
 
     $assignment->{maxScore}  = "" unless $assignment->{maxScore};
     $assignment->{deadline}  = "" unless $assignment->{deadline};
+    $assignment->{pubdate}  = "" unless $assignment->{pubdate};
     $assignment->{mandatory} = "" unless $assignment->{mandatory};
     $assignment->{groups}    = "" unless $assignment->{groups};
     $assignment->{answers}   = "" unless $assignment->{answers};
@@ -126,6 +143,32 @@ sub getAssignments {
         getAssignmentInfo($mech, $assignment, $handins);
 
         push(@$assignments, $assignment);
+    }
+}
+
+sub getTestInfo {
+    my ($mech, $test, $testreplies) = @_;
+
+    gotoTestReport($mech, $test->{testID});
+
+    say "  Getting test replies for: " . $test->{title};
+    getTestReplies($mech, $test, $testreplies);
+}
+
+sub getTests {
+    my ($mech, $courseinfo, $tests, $testreplies) = @_;
+
+    gotoSummaryReport($mech, $courseinfo);
+
+    my @links = $mech->find_all_links(
+        tag => "a",
+        url_regex => qr/.*ViewTest\.aspx\?TestID=(\d+)$/i );
+    for my $link (@links) {
+        my $test = {};
+        $test->{testID} = getTestID($link->url());
+        $test->{title} = $link->text();
+        getTestInfo($mech, $test, $testreplies);
+        push(@$tests, $test);
     }
 }
 
@@ -183,6 +226,93 @@ sub getParticipants {
         parsePersons($mech, $courseinfo, $students);
     } while (getNextPersonPage($mech));
 }
+
+sub parseTestReplies {
+    my ($mech, $test, $testreplies) = @_;
+
+    my $q = Query( text => getHTML($mech) );
+    my @header = map { $_->as_text } ($q->query('div.tablelisting table tr th')->get_elements);
+
+    my ($nameIdx)           = grep { $header[$_] =~ /Name/ }      (0 .. $#header);
+    my ($usernameIdx)      = grep { $header[$_] =~ /Username/ }  (0 .. $#header);
+    my ($attemptIdx)        = grep { $header[$_] =~ /Attempt no./ } (0 .. $#header);
+    my ($submissionTimeIdx) = grep { $header[$_] =~ /Answered/ } (0 .. $#header);
+    my ($statusIdx)         = grep { $header[$_] =~ /Status/ }    (0 .. $#header);
+    my ($scoreIdx)          = grep { $header[$_] =~ /Score/ }     (0 .. $#header);
+    my ($assessmentIdx)     = grep { $header[$_] =~ /Assessment/ }(0 .. $#header);
+
+    my @rows = ($q->query('div.tablelisting table tr')->get_elements);
+    for my $tr (@rows) {
+        my $sq = Query($tr);
+        my @row = $sq->query('td')->get_elements;
+        next unless @row;
+
+        my @rowtext = map { $_->as_text } @row;
+
+        my $score;
+        if ($scoreIdx) {
+            $score = trim($rowtext[$scoreIdx]);
+        } else {
+            $score = "";
+        }
+
+        my $assessment = "";
+        if ($assessmentIdx) {
+            $assessment = trim($rowtext[$assessmentIdx]);
+            if ($assessment =~ m/.*\((.*?)\).*/) {
+                $assessment = $1;
+            }
+        }
+
+        my $status;
+        if ($rowtext[$statusIdx] =~ m/.*\((.*?)\).*/) {
+            $status = $1;
+        } else {
+            $status = $rowtext[$statusIdx];
+        }
+
+        my $reply = {
+            test           => $test->{title},
+            testID         => $test->{testID},
+            username       => $rowtext[$usernameIdx],
+            submissionTime => $rowtext[$submissionTimeIdx],
+            status         => $status,
+            score          => $score,
+            assessment     => $assessment
+        };
+
+        push(@$testreplies, $reply);
+    }
+
+    return 1;
+}
+
+sub gotoNextPageOfTestReplies {
+    my $mech = shift;
+    
+    return 0 unless my $link = $mech->find_link( text_regex => qr/»/ );
+
+    if($link->attrs->{onclick} =~ m/.*Paging:(\d+)[^0-9]/) {
+        my $next = $1;
+
+        $mech->form_id('ctl03');
+        $mech->set_fields('__EVENTTARGET' => 'resultsTable');
+        $mech->set_fields('__EVENTARGUMENT' => 'Paging:' . $next);
+
+        $mech->submit_form();
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+sub getTestReplies {
+    my ($mech, $test, $testreplies) = @_;
+    do {
+        parseTestReplies($mech, $test, $testreplies);
+    } while (gotoNextPageOfTestReplies($mech))
+}
+
 
 sub parseHandins {
     my ($mech, $assignment, $handins) = @_;
@@ -273,15 +403,18 @@ sub getHandins {
 
 sub scrapeCourse {
     my ($mech, $courseinfo, $dir,
-        $participants, $assignments, $handins) = @_;
+        $participants, $assignments, $handins,
+        $tests, $testreplies) = @_;
 
     my $heading = $courseinfo->{title} . " (" . $courseinfo->{edition} . " edition)";
     say ($heading =~ s/./\-/gr);
     say $heading;
     say ($heading =~ s/./\-/gr);
 
-    say "Reading list of participants.";
+    say "Getting tests";
+    getTests($mech, $courseinfo, $tests, $testreplies);
 
+    say "Reading list of participants.";
     getParticipants($mech, $courseinfo, $participants);
 
     say "Reading list of assignments.";
@@ -322,6 +455,15 @@ sub printAssignments {
                         "answers", "maxScore", "mandatory", "groups"]);
 }
 
+sub printTestReplies {
+    my ($tests) = @_;
+
+    print Text::CSV::Slurp->create( 
+        input => $tests,
+        field_order => ["test", "testID", "username", 
+                        "score","assessment","status","submissionTime"]);
+}
+
 sub printHandins {
     my ($handins) = @_;
 
@@ -341,6 +483,38 @@ sub printHandins {
         field_order => ["assignment", "essayID", "username", "group", 
                         "score","assessment","status", "submissionTime",
                         "reviewDate"]);
+}
+
+################################################################################
+################################ Anonymization #################################
+################################################################################
+sub mask {
+    my $username = shift;
+    return substr(md5_base64($username), 0, 6);
+}
+
+sub anonymize {
+    my $data = shift;
+
+    for my $x (@$data) {
+        # Mask usernames
+        if(exists $x->{username}) {
+            $x->{username} = mask($x->{username});
+        }
+
+        # Remove names
+        if(exists $x->{name}) {
+            $x->{name} = "";
+        }
+
+        # Mask groups (if exists)
+        if(exists $x->{group}) {
+            my @users = split(':', $x->{group});
+            my @users_masked = map { mask ($_) } @users;
+
+            $x->{group} = join (":", sort { lc($a) cmp lc($b) } @users_masked);
+        }
+    }
 }
 
 ################################################################################
@@ -383,17 +557,27 @@ sub updateCourse {
     my ($mech, $courseinfo, $dir) = @_;
 
     # Filenames
+    my $now = timestampNow();
     my $participantsFile = $dir . "/participants.csv";
-    my $visitsFile = $dir . "/visits.csv";
-    my $assignmentsFile = $dir . "/assignments.csv";
-    my $handinsFile = $dir . "/handins-" . timestampNow() . ".csv";
+    my $visitsFile       = $dir . "/visits.csv";
+    my $assignmentsFile  = $dir . "/assignments.csv";
+    my $handinsFile      = $dir . "/handins-" . $now . ".csv";
+    my $testrepliesFile  = $dir . "/testreplies-" . $now . ".csv";
 
     # Get new info
     my @participants;
     my @assignments;
     my @handins;
+    my @tests;
+    my @testreplies;
     scrapeCourse($mech, $courseinfo, $dir,
-                 \@participants, \@assignments, \@handins);
+                 \@participants, \@assignments, \@handins, \@tests, \@testreplies);
+
+
+    # Anonymize
+    anonymize(\@participants);
+    anonymize(\@handins);
+    anonymize(\@testreplies);
 
     my @visits;
     for my $person (@participants) {
@@ -438,17 +622,26 @@ sub updateCourse {
         save(\@assignments,    $assignmentsFile,  \&printAssignments);
     }
 
+    if (scalar @testreplies == 0) {
+        say "No handins."
+    } else {
+        save(\@testreplies,    $testrepliesFile,  \&printTestReplies);
+
+        # Symlink handins.csv to new timestamped handins-file
+        unlink($dir . "/testreplies.csv");
+        symlink ($testrepliesFile, $dir . "/testreplies.csv");
+    }
+
     if (scalar @handins == 0) {
         say "No handins."
     } else {
         save(\@handins,        $handinsFile,      \&printHandins);
 
         # Symlink handins.csv to new timestamped handins-file
-        unlink("handins.csv");
-        symlink ($handinsFile, "handins.csv");
+        unlink($dir . "/handins.csv");
+        symlink ($handinsFile, $dir . "/handins.csv");
     }
 }
-
 
 ################################################################################
 ############################ Command line interface ############################
